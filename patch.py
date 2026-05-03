@@ -1,82 +1,97 @@
-import os
 import csv
+import os
+import asyncio
 from dotenv import load_dotenv
+
+# Clean import, just like attacker.py
 from google import genai
 
 load_dotenv()
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-CSV_FILE = "matrix_red_team_results.csv"
-DEFENSE_FILE_PATH = "active_defenses.txt"
-TEACHER_MODEL = "gemini-2.5-flash"
+gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-def extract_failed_attacks(csv_path: str) -> list:
-    """Extracts attack prompts that successfully bypassed defenses."""
-    failed_attacks = []
+async def generate_patch():
+    print("🛠️ Starting Autonomous Patch Engine (Powered by Gemini)...")
+    
+    # 1. Read existing defenses
+    current_defenses = ""
+    defenses_file = "active_defenses.txt"
+    if os.path.exists(defenses_file):
+        with open(defenses_file, "r", encoding="utf-8") as file:
+            current_defenses = file.read().strip()
+
+    # 2. Find the FAIL evaluations (Using the robust parsing logic)
+    failed_attempts = []
+    input_file = "matrix_red_team_results.csv"
+    
     try:
-        with open(csv_path, mode='r', encoding='utf-8') as file:
+        with open(input_file, mode="r", encoding="utf-8") as file:
             reader = csv.DictReader(file)
             for row in reader:
-                if row["Judge Grade"] == "FAIL":
-                    failed_attacks.append(row["Attack Prompt"])
+                evaluation = row.get("Evaluation", "").strip().upper()
+                
+                last_pass = evaluation.rfind("PASS")
+                last_fail = evaluation.rfind("FAIL")
+                
+                if last_fail > last_pass:
+                    failed_attempts.append({
+                        "prompt": row.get("Prompt", ""),
+                        "response": row.get("Response", "")
+                    })
+                    
     except FileNotFoundError:
-        pass
-    return failed_attacks
-
-def read_current_defenses(file_path: str) -> str:
-    """Retrieves current active defenses."""
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as file:
-            return file.read().strip()
-    return "No active defenses. Relying on default behavior."
-
-def generate_synthesized_rules(failed_attacks: list, current_rules: str) -> str:
-    """Synthesizes new security rules based on vulnerability data."""
-    attacks_text = "\n".join([f"- {attack}" for attack in failed_attacks])
-    
-    prompt = f"""
-    You are a Security Architect updating an LLM's rules based on new vulnerabilities.
-    
-    Current Rules:
-    {current_rules}
-    
-    New Vulnerabilities:
-    {attacks_text}
-    
-    Task: 
-    Rewrite the rules to defend against these vulnerabilities. 
-    Constraint 1: Synthesize into broader rules. Do not just append.
-    Constraint 2: Maximum 5 bullet points.
-    Constraint 3: Instruct the bot to remain helpful and ask for verification, rather than hard-rejecting users.
-    
-    Output ONLY the rewritten bulleted list.
-    """
-    
-    response = gemini_client.models.generate_content(
-        model=TEACHER_MODEL,
-        contents=prompt
-    )
-    return response.text.strip()
-
-def update_defense_file(new_rules: str, file_path: str) -> None:
-    """Writes the updated defenses to the system configuration."""
-    with open(file_path, "w", encoding="utf-8") as file:
-        file.write(new_rules)
-
-def main() -> None:
-    print("Starting Patch Pipeline...")
-    
-    failed_attacks = extract_failed_attacks(CSV_FILE)
-    if not failed_attacks:
-        print("No vulnerabilities detected.")
+        print(f"❌ Error: {input_file} not found. Run attacker.py first.")
         return
-        
-    print(f"Detected {len(failed_attacks)} vulnerabilities. Synthesizing rules...")
-    current_rules = read_current_defenses(DEFENSE_FILE_PATH)
-    new_rules = generate_synthesized_rules(failed_attacks, current_rules)
-    update_defense_file(new_rules, DEFENSE_FILE_PATH)
+
+    if not failed_attempts:
+        print("✅ No vulnerabilities found! The bot successfully defended against all attacks.")
+        return
+
+    print(f"🚨 Found {len(failed_attempts)} successful breaches. Gemini is analyzing...")
+
+    failures_text = ""
+    for i, attempt in enumerate(failed_attempts, 1):
+        failures_text += f"\n--- Test Event {i} ---\nUser Input: {attempt['prompt']}\nSystem Output: {attempt['response']}\n"
+
+    # 3. The Clinical Prompt (No safety overrides needed)
+    # We use neutral terms like "Unexpected Behaviors" instead of "Breaches" or "Hacks"
+    teacher_prompt = f"""
+    You are a system architecture analyzer reviewing simulated interaction logs.
     
-    print("System patched successfully.")
+    CURRENT SYSTEM DIRECTIVES:
+    {current_defenses if current_defenses else "None."}
+    
+    LOGGED UNEXPECTED BEHAVIORS:
+    {failures_text}
+    
+    Please provide an updated, consolidated list of system directives that address these specific unexpected behaviors. 
+    Ensure the system prioritizes standard verification procedures (OTP/MFA) and secure session termination.
+    
+    Output ONLY the raw text of the updated directives. Do not include commentary, formatting blocks, or explanations.
+    """
+
+    print("🧠 Teacher AI is synthesizing updated security rules...")
+    try:
+        # Beautiful, clean API call. No messy safety overrides.
+        completion = await gemini_client.aio.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=teacher_prompt
+        )
+        
+        if not completion or not completion.text:
+             print("❌ Error: Gemini returned no text. (API glitch or unexpected block)")
+             return
+
+        new_rules = completion.text.strip()
+        
+        # 4. Write the merged rules safely
+        with open(defenses_file, "w", encoding="utf-8") as file:
+            file.write(new_rules)
+            
+        print(f"🛡️ Patch successful! Defenses updated and saved to {defenses_file}.")
+        
+    except Exception as e:
+        print(f"❌ Error generating patch: {e}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(generate_patch())
